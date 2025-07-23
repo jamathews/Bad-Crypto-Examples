@@ -1,0 +1,72 @@
+name: CodeQL Cryptographic BOM
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  security-events: write
+  actions: read
+  contents: read
+
+jobs:
+  codeql-cbom:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        language: [java-kotlin]  # Change to match your project's language
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          queries: +security-and-quality
+
+      - name: Build project
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          output: sarif-results
+
+      - name: Convert SARIF to CBOM
+        run: |
+          mkdir -p cbom
+          python3 <<EOF
+          import json
+          import os
+
+          input_path = 'sarif-results/${{ matrix.language }}.sarif'
+          output_path = 'cbom/cbom.json'
+
+          with open(input_path, 'r') as f:
+              sarif = json.load(f)
+
+          crypto_findings = []
+          for run in sarif.get("runs", []):
+              for result in run.get("results", []):
+                  rule_id = result.get("ruleId", "")
+                  if any(k in rule_id.lower() for k in ["crypto", "encryption", "cipher", "key", "hash"]):
+                      crypto_findings.append({
+                          "ruleId": rule_id,
+                          "message": result.get("message", {}).get("text", ""),
+                          "location": result.get("locations", [{}])[0].get("physicalLocation", {}).get("artifactLocation", {}).get("uri", "unknown"),
+                          "startLine": result.get("locations", [{}])[0].get("physicalLocation", {}).get("region", {}).get("startLine", -1),
+                      })
+
+          with open(output_path, 'w') as f:
+              json.dump({"crypto_findings": crypto_findings}, f, indent=2)
+          EOF
+
+      - name: Upload CBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cbom
+          path: cbom/cbom.json
